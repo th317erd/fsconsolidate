@@ -2,6 +2,7 @@
 
 const Path = require('node:path');
 const { formatBytes } = require('../lib/utils');
+const { getShuttingDown } = require('../lib/hasher');
 
 async function commandDuplicates(db, args) {
   let hashCount = 0;
@@ -10,6 +11,7 @@ async function commandDuplicates(db, args) {
   const duplicateGroups = [];
 
   for (let dupe of db.iterateDuplicates()) {
+    if (getShuttingDown()) break;
     hashCount++;
     totalDupeFiles += dupe.count - 1;
     totalWastedBytes += dupe.size * (dupe.count - 1);

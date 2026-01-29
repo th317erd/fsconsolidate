@@ -41,6 +41,7 @@ const commandLargeFiles = require('./commands/large-files');
 const commandInspect = require('./commands/inspect');
 const commandRemove = require('./commands/remove');
 const commandMigrate = require('./commands/migrate');
+const commandAnalyze = require('./commands/analyze');
 
 // Global state
 let globalDb = null;
@@ -50,14 +51,27 @@ let globalDb = null;
 // ============================================================================
 
 function setupShutdownHandler() {
+  let shutdownRequested = false;
+
   const shutdown = (signal) => {
+    if (shutdownRequested) {
+      console.log('\nForce exiting...');
+
+      if (globalDb) {
+        try { globalDb.close(); } catch (err) { /* ignore */ }
+      }
+
+      process.exit(1);
+    }
+
+    shutdownRequested = true;
     setShuttingDown(true);
-    console.log(`\n\nReceived ${signal}. Closing database...`);
+    console.log(`\n\nReceived ${signal}. Shutting down gracefully... (press again to force)`);
 
     if (globalDb) {
       try {
         globalDb.close();
-        console.log('Database closed successfully.');
+        console.log('Database closed.');
       } catch (err) {
         printError(`Error closing database: ${err.message}`);
       }
@@ -89,6 +103,7 @@ Commands:
   config        Show or modify configuration (roots, rules, ignore patterns)
   duplicates    Show duplicate file summary
   inspect       Browse database (files, roots, duplicates, synced, hash, search)
+  analyze       Analyze files (guess-targets: infer sync locations from hashes)
   remove        Remove files from database matching a pattern
   migrate       Migrate from old JSON database to SQLite
 
@@ -108,12 +123,19 @@ Sync Options:
 Config Options:
   --add-root <path>           Add a root path to scan
   --remove-root <path>        Remove a root path
+  --root-option <root> <key> [value]  Set/remove a per-root option
   --add-rule <pattern> <dest> Add a routing rule
   --add-ignore <pattern>      Add an ignore pattern
   --add-include <pattern>     Add include pattern (overrides ignore patterns)
   --remove-include <pattern>  Remove an include pattern
   --set-dest <path>           Set default sync destination
   --reset                     Reset to defaults (keeps file hashes)
+
+Root Options:
+  move_on_sync    Move files instead of copy during sync
+                  (instant rename on same device, copy+delete across devices)
+                  Enable:  --root-option <root> move_on_sync
+                  Disable: --root-option <root> move_on_sync false
 
 Inspect Subcommands:
   inspect files              List all files in database
@@ -171,9 +193,12 @@ function parseArgs(argv) {
     dryRun:         false,
     limit:          50,
     includeLarge:   false,
-    addRoot:        null,
-    removeRoot:     null,
-    addRulePattern: null,
+    addRoot:          null,
+    removeRoot:       null,
+    rootOptionRoot:   null,
+    rootOptionKey:    null,
+    rootOptionValue:  null,
+    addRulePattern:   null,
     addRuleDest:    null,
     addIgnore:      null,
     addInclude:     null,
@@ -181,6 +206,7 @@ function parseArgs(argv) {
     setDest:        null,
     reset:          false,
     inspectType:    null,
+    analyzeType:    null,
     filterRoot:     null,
     filterExt:      null,
     hashQuery:      null,
@@ -221,6 +247,15 @@ function parseArgs(argv) {
         break;
       case '--remove-root':
         args.removeRoot = argv[++i];
+        break;
+      case '--root-option':
+        args.rootOptionRoot = argv[++i];
+        args.rootOptionKey = argv[++i];
+        // Value is optional - omitting it implies 'true'
+        if (i + 1 < argv.length && !argv[i + 1].startsWith('--'))
+          args.rootOptionValue = argv[++i];
+        else
+          args.rootOptionValue = 'true';
         break;
       case '--add-rule':
         args.addRulePattern = argv[++i];
@@ -275,6 +310,8 @@ function parseArgs(argv) {
         args.hashQuery = positional[2];
       else if (args.inspectType === 'search' && positional.length > 2)
         args.searchPattern = positional.slice(2).join(' ');
+    } else if (args.command === 'analyze' && positional.length > 1) {
+      args.analyzeType = positional[1];
     } else if (args.command === 'remove' && positional.length > 1) {
       args.removePattern = positional.slice(1).join(' ');
     } else if (args.command === 'migrate' && positional.length > 1) {
@@ -348,6 +385,9 @@ function parseArgs(argv) {
         break;
       case 'inspect':
         await commandInspect(globalDb, args);
+        break;
+      case 'analyze':
+        await commandAnalyze(globalDb, args);
         break;
       case 'migrate':
         await commandMigrate(globalDb, args);

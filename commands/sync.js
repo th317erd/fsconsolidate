@@ -55,8 +55,9 @@ async function promptForFilename(allFilenames, allSourcePaths, rl) {
 
 /**
  * Get unique files pending sync, grouped by hash
+ * Excludes files already in the destination (those are targets, not sources)
  */
-function getPendingFiles(db) {
+function getPendingFiles(db, destPath) {
   const routingRules = db.getRoutingRules();
   const defaultRoutingRules = db.getDefaultRoutingRules();
 
@@ -64,11 +65,18 @@ function getPendingFiles(db) {
   const unmatched = [];
   const seenHashes = new Map(); // hash -> file info
 
+  // Normalize destination path for prefix matching
+  const destPrefix = (destPath) ? (destPath.endsWith('/') ? destPath : destPath + '/') : null;
+
   for (let file of db.iterateFiles()) {
     if (!file.hash)
       continue;
 
     if (db.isSynced(file.hash))
+      continue;
+
+    // Skip files already in destination (they're targets, not sources)
+    if (destPrefix && (file.path === destPath || file.path.startsWith(destPrefix)))
       continue;
 
     if (!seenHashes.has(file.hash)) {
@@ -116,7 +124,7 @@ async function commandSync(db, args) {
     FileSystem.mkdirSync(resolved, { recursive: true });
   }
 
-  const { pending, unmatched } = getPendingFiles(db);
+  const { pending, unmatched } = getPendingFiles(db, resolved);
 
   const regularFiles = [];
   const largeFiles = [];
@@ -186,22 +194,35 @@ async function commandSync(db, args) {
       }
 
       if (args.dryRun) {
-        console.log(`  [DRY] ${chosenFilename} -> ${file.destFolder}/`);
+        const moveFlag = db.isMoveOnSync(file.sourcePath);
+        const verb = (moveFlag) ? 'move' : 'copy';
+        console.log(`  [DRY] ${verb}: ${chosenFilename} -> ${file.destFolder}/`);
       } else {
-        const finalPath = copyFileToDestination(file.sourcePath, resolved, file.destFolder, chosenFilename);
+        const moveFile = db.isMoveOnSync(file.sourcePath);
+        const result = copyFileToDestination(file.sourcePath, resolved, file.destFolder, chosenFilename, { moveFile });
         db.markSynced(
           file.hash,
-          finalPath,
+          result.path,
           file.sourcePath,
           chosenFilename,
           file.allSourcePaths,
           file.allFilenames
         );
+
+        // If moved, remove the stale source path from the files table
+        if (result.moved && !result.skipped)
+          db.removeFile(file.sourcePath);
+
         copied++;
-        console.log(`  Copied: ${chosenFilename} -> ${file.destFolder}/`);
+        if (result.skipped)
+          console.log(`  Skipped (already exists): ${chosenFilename} -> ${file.destFolder}/`);
+        else if (result.moved)
+          console.log(`  Moved: ${chosenFilename} -> ${file.destFolder}/`);
+        else
+          console.log(`  Copied: ${chosenFilename} -> ${file.destFolder}/`);
       }
     } catch (err) {
-      printError(`\n  Error copying ${file.sourcePath}: ${err.message}`);
+      printError(`\n  Error syncing ${file.sourcePath}: ${err.message}`);
       errors++;
     }
   }

@@ -2,6 +2,7 @@
 
 const Path = require('node:path');
 const { formatBytes } = require('../lib/utils');
+const { getShuttingDown } = require('../lib/hasher');
 
 async function commandInspect(db, args) {
   const subcommand = args.inspectType || 'help';
@@ -115,6 +116,8 @@ function inspectRoots(db, args) {
   const fileCountByRoot = db.getFileCountByRoot(roots);
 
   for (let root of roots) {
+    if (getShuttingDown()) break;
+
     const count = fileCountByRoot[root] || 0;
 
     // Calculate unique hashes in this root

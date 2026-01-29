@@ -2,6 +2,7 @@
 
 const Path = require('node:path');
 const { formatBytes } = require('../lib/utils');
+const { getShuttingDown } = require('../lib/hasher');
 const { matchFileToRule } = require('../lib/patterns');
 const { LARGE_FILE_THRESHOLD } = require('../lib/constants');
 
@@ -14,6 +15,7 @@ async function commandLargeFiles(db, args) {
   const seenHashes = new Set();
 
   for (let file of db.iterateFiles()) {
+    if (getShuttingDown()) break;
     if (!file.hash || file.size <= LARGE_FILE_THRESHOLD)
       continue;
 

@@ -1,6 +1,7 @@
 'use strict';
 
 const Path = require('node:path');
+const FileSystem = require('node:fs');
 
 async function commandConfig(db, args) {
   let modified = false;
@@ -18,7 +19,7 @@ async function commandConfig(db, args) {
   }
 
   if (args.removeRoot) {
-    const resolved = Path.resolve(args.removeRoot);
+    const resolved = FileSystem.realpathSync(Path.resolve(args.removeRoot));
     if (db.removeRoot(resolved)) {
       modified = true;
       console.log(`Removed root: ${resolved}`);
@@ -54,6 +55,29 @@ async function commandConfig(db, args) {
     }
   }
 
+  if (args.rootOptionRoot && args.rootOptionKey) {
+    const resolved = FileSystem.realpathSync(Path.resolve(args.rootOptionRoot));
+    const key = args.rootOptionKey;
+    const value = args.rootOptionValue;
+
+    if (value === 'false') {
+      // Explicit 'false' removes the option
+      if (db.removeRootOption(resolved, key)) {
+        modified = true;
+        console.log(`Disabled "${key}" on root: ${resolved}`);
+      } else {
+        console.log(`Option "${key}" not found on root: ${resolved}`);
+      }
+    } else {
+      if (db.setRootOption(resolved, key, value)) {
+        modified = true;
+        console.log(`Set root option: ${resolved} ${key}=${value}`);
+      } else {
+        console.log(`Root not found: ${resolved}`);
+      }
+    }
+  }
+
   if (args.setDest) {
     db.setSyncDestination(args.setDest);
     modified = true;
@@ -71,10 +95,17 @@ async function commandConfig(db, args) {
 
   console.log(`\n=== Configuration ===`);
   console.log(`\nRoots (${roots.length}):`);
-  if (roots.length === 0)
+  if (roots.length === 0) {
     console.log('  (none)');
-  else
-    for (let r of roots) console.log(`  - ${r}`);
+  } else {
+    for (let r of roots) {
+      const opts = db.getRootOptions(r);
+      const optStr = Object.keys(opts).length > 0
+        ? ` [${Object.entries(opts).map(([k, v]) => `${k}=${v}`).join(', ')}]`
+        : '';
+      console.log(`  - ${r}${optStr}`);
+    }
+  }
 
   console.log(`\nSync destination: ${syncDest || '(not set)'}`);
 

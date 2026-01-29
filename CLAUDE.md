@@ -234,3 +234,81 @@ Before hashing, files are checked for potentially blocking file types. The follo
 
 Built-in Node.js modules:
 - `node:fs`, `node:path`, `node:crypto`, `node:readline`
+
+---
+
+## Development Log
+
+### Session: January 2025 - SQLite Migration & Refactor
+
+**Problem:** The original JSON-based database caused JavaScript heap out of memory errors (4GB+) when scanning large file sets (~110k files, 2TB+).
+
+**Solution:** Complete rewrite from JSON to SQLite with modular file structure.
+
+#### Work Completed:
+
+1. **Added SQLite dependency** - `better-sqlite3` added to package.json, version bumped to 2.0.0
+
+2. **Created modular file structure:**
+   - `lib/constants.js` - Configuration constants
+   - `lib/utils.js` - Utility functions (formatBytes, printError, etc.)
+   - `lib/patterns.js` - Glob matching and pattern functions
+   - `lib/db.js` - SQLite database layer (FileDatabase class with WAL mode)
+   - `lib/hasher.js` - File hashing with progress, stall detection, shutdown support
+   - `lib/scanner.js` - Memory-efficient file system scanning with generators
+   - `lib/sync.js` - File copy operations
+   - `commands/*.js` - Individual command files (scan, status, sync, config, interactive, duplicates, large-files, inspect, remove, migrate)
+
+3. **Created migrate command** - Converts old JSON database to SQLite format
+
+4. **Added `inspect final-target-size` subcommand** - Calculates total unique file size using efficient SQL aggregation:
+   ```sql
+   SELECT COUNT(*) as count, SUM(size) as totalSize FROM (
+     SELECT hash, MIN(size) as size FROM files
+     WHERE hash IS NOT NULL
+     GROUP BY hash
+   )
+   ```
+
+#### Test Database Stats:
+
+- **Database location:** `/media/Data/Remote/.fs-consolide-mains.sqlite`
+- **Total files:** 109,959 (2.08 TB with duplicates)
+- **Unique files:** 67,881 (1.83 TB deduplicated)
+- **Duplicates:** 42,078 files (254 GB redundant)
+- **Roots:** 3
+  - `/media/Data/Remote/Seafile/th317erd@gmail.com`
+  - `/media/Data/Remote/Seafile/wyatt-desktop`
+  - `/media/wyatt/Elements/wyatt-desktop`
+
+#### Migration Verification:
+
+To verify a JSON → SQLite migration:
+```bash
+# Compare counts
+node index.js status --db /path/to/new.sqlite
+
+# Check JSON counts
+node -e "const d = require('/path/to/old.json'); console.log('Files:', Object.keys(d.files || {}).length)"
+node -e "const d = require('/path/to/old.json'); console.log('Synced:', Object.keys(d.synced || {}).length)"
+node -e "const d = require('/path/to/old.json'); console.log('Roots:', (d.config?.roots || []).length)"
+
+# Spot-check specific hashes
+node index.js inspect hash <hash-prefix> --db /path/to/new.sqlite
+```
+
+#### User Coding Preferences (from quirks.md):
+
+- Single quotes, semicolons required, 2-space indentation
+- Aligned value spacing in objects
+- Trailing commas on multiline
+- Curly braces: multi-or-nest, body on next line
+- Ternary parentheses required: `(condition) ? a : b`
+- Strict equality: `===` and `!==` (with `== null` exception)
+- Design for intent, not strict types (flexible utility functions)
+
+### Next Steps / Future Work:
+
+- Full workflow test with real data sync
+- Consider adding progress bar for long operations
+- Potential: add `--verify` flag to sync command for post-copy hash verification

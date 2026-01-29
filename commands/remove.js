@@ -4,6 +4,7 @@ const Path = require('node:path');
 const Readline = require('node:readline');
 const { formatBytes, printError } = require('../lib/utils');
 const { globToRegex } = require('../lib/patterns');
+const { getShuttingDown } = require('../lib/hasher');
 
 async function commandRemove(db, args) {
   const pattern = args.removePattern;
@@ -23,44 +24,54 @@ async function commandRemove(db, args) {
     process.exit(1);
   }
 
-  // Build matcher
-  let matcher;
-  if (pattern.includes('*') || pattern.includes('?') || pattern.includes('{')) {
-    const regex = globToRegex(pattern);
-    matcher = (filePath) => regex.test(filePath) || regex.test(Path.basename(filePath));
+  // Determine if we can use bulk SQL (simple substring pattern)
+  const isGlob = pattern.includes('*') || pattern.includes('?') || pattern.includes('{');
+  const canBulkDelete = !isGlob;
+
+  // Preview matching files
+  let matchCount;
+  let totalSize;
+  let sampleFiles;
+
+  if (canBulkDelete) {
+    const likePattern = `%${pattern}%`;
+    const stats = db.db.prepare('SELECT COUNT(*) as count, SUM(size) as totalSize FROM files WHERE path LIKE ?').get(likePattern);
+    matchCount = stats.count;
+    totalSize = stats.totalSize || 0;
+    sampleFiles = db.db.prepare('SELECT path, size FROM files WHERE path LIKE ? LIMIT 50').all(likePattern);
   } else {
-    const lowerPattern = pattern.toLowerCase();
-    matcher = (filePath) => filePath.toLowerCase().includes(lowerPattern);
-  }
+    const regex = globToRegex(pattern);
+    const matcher = (filePath) => regex.test(filePath) || regex.test(Path.basename(filePath));
+    sampleFiles = [];
+    matchCount = 0;
+    totalSize = 0;
 
-  // Find matching files
-  const matchingFiles = [];
-  let totalSize = 0;
-
-  for (let file of db.iterateFiles()) {
-    if (matcher(file.path)) {
-      matchingFiles.push(file);
-      totalSize += file.size || 0;
+    for (let file of db.iterateFiles()) {
+      if (matcher(file.path)) {
+        matchCount++;
+        totalSize += file.size || 0;
+        if (sampleFiles.length < 50)
+          sampleFiles.push(file);
+      }
     }
   }
 
-  if (matchingFiles.length === 0) {
+  if (matchCount === 0) {
     console.log(`No files match pattern: ${pattern}`);
     return;
   }
 
   console.log(`\n=== Files matching "${pattern}" ===`);
-  console.log(`Found: ${matchingFiles.length} files (${formatBytes(totalSize)})\n`);
+  console.log(`Found: ${matchCount} files (${formatBytes(totalSize)})\n`);
 
-  const displayLimit = 50;
-  for (let file of matchingFiles.slice(0, displayLimit))
+  for (let file of sampleFiles)
     console.log(`  ${file.path} (${formatBytes(file.size)})`);
 
-  if (matchingFiles.length > displayLimit)
-    console.log(`  ... and ${matchingFiles.length - displayLimit} more files`);
+  if (matchCount > sampleFiles.length)
+    console.log(`  ... and ${matchCount - sampleFiles.length} more files`);
 
   console.log('');
-  console.log(`This will remove ${matchingFiles.length} files from the DATABASE ONLY.`);
+  console.log(`This will remove ${matchCount} files from the DATABASE ONLY.`);
   console.log(`(The actual files on disk will NOT be deleted.)`);
 
   const rl = Readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -77,11 +88,24 @@ async function commandRemove(db, args) {
     return;
   }
 
-  // Remove files
-  let removed = 0;
-  for (let file of matchingFiles) {
-    if (db.removeFile(file.path))
-      removed++;
+  // Remove files — bulk SQL for substring patterns, row-by-row for globs
+  let removed;
+  if (canBulkDelete) {
+    const likePattern = `%${pattern}%`;
+    const result = db.db.prepare('DELETE FROM files WHERE path LIKE ?').run(likePattern);
+    removed = result.changes;
+  } else {
+    const regex = globToRegex(pattern);
+    const matcher = (filePath) => regex.test(filePath) || regex.test(Path.basename(filePath));
+    const allFiles = db.db.prepare('SELECT path FROM files').all();
+    removed = 0;
+    for (let file of allFiles) {
+      if (getShuttingDown()) break;
+      if (matcher(file.path)) {
+        if (db.removeFile(file.path))
+          removed++;
+      }
+    }
   }
 
   console.log(`\nRemoved ${removed} files from database.`);

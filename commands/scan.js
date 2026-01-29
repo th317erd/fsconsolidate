@@ -1,6 +1,7 @@
 'use strict';
 
 const Path = require('node:path');
+const FileSystem = require('node:fs');
 const { scanRoots } = require('../lib/scanner');
 const { hashFilesWithProgress, getShuttingDown } = require('../lib/hasher');
 const { MAX_CONCURRENT } = require('../lib/constants');
@@ -22,15 +23,55 @@ async function commandScan(db, args) {
     process.exit(1);
   }
 
+  // Build list of paths to scan: roots + destination (if set)
+  // Resolve all paths and deduplicate to prevent scanning the same location twice
+  const destination = db.getSyncDestination();
+
+  // First, resolve and deduplicate roots
+  const seenPaths = new Set();
+  const pathsToScan = [];
+
+  for (let p of roots) {
+    try {
+      const realPath = FileSystem.realpathSync(p);
+      if (!seenPaths.has(realPath)) {
+        seenPaths.add(realPath);
+        pathsToScan.push(realPath);
+      }
+    } catch (err) {
+      console.warn(`Warning: Cannot resolve root ${p}: ${err.message}`);
+    }
+  }
+
+  // Add destination if set and not already covered by a root
+  let scanningDestination = false;
+  if (destination && FileSystem.existsSync(destination)) {
+    try {
+      const destRealPath = FileSystem.realpathSync(destination);
+
+      // Check if destination is already in the list OR is a subdirectory of a scanned path
+      const alreadyCovered = seenPaths.has(destRealPath) ||
+        pathsToScan.some((p) => destRealPath.startsWith(p + '/'));
+
+      if (!alreadyCovered) {
+        seenPaths.add(destRealPath);
+        pathsToScan.push(destRealPath);
+        scanningDestination = true;
+      }
+    } catch (err) {
+      console.warn(`Warning: Cannot resolve destination ${destination}: ${err.message}`);
+    }
+  }
+
   const ignorePatterns = db.getIgnorePatterns();
   const defaultIgnorePatterns = db.getDefaultIgnorePatterns();
   const includePatterns = db.getIncludePatterns();
 
   const ignoreCount = ignorePatterns.length + defaultIgnorePatterns.length;
   console.log(`\nIgnoring ${ignoreCount} patterns`);
-  console.log(`Scanning ${roots.length} root(s)...\n`);
+  console.log(`Scanning ${roots.length} root(s)${(scanningDestination) ? ' + destination' : ''}...\n`);
 
-  const { files } = scanRoots(roots, {
+  const { files } = scanRoots(pathsToScan, {
     ignorePatterns,
     defaultIgnorePatterns,
     includePatterns,

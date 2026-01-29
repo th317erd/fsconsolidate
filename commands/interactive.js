@@ -14,18 +14,26 @@ async function prompt(rl, question) {
 
 /**
  * Get unmatched files (no routing rule matches)
+ * Excludes files already in the destination (those are targets, not sources)
  */
-function getUnmatchedFiles(db) {
+function getUnmatchedFiles(db, destPath) {
   const routingRules = db.getRoutingRules();
   const defaultRoutingRules = db.getDefaultRoutingRules();
   const unmatched = [];
   const seenHashes = new Map();
+
+  // Normalize destination path for prefix matching
+  const destPrefix = (destPath) ? (destPath.endsWith('/') ? destPath : destPath + '/') : null;
 
   for (let file of db.iterateFiles()) {
     if (!file.hash)
       continue;
 
     if (db.isSynced(file.hash))
+      continue;
+
+    // Skip files already in destination (they're targets, not sources)
+    if (destPrefix && (file.path === destPath || file.path.startsWith(destPrefix)))
       continue;
 
     if (!seenHashes.has(file.hash)) {
@@ -63,7 +71,7 @@ async function commandInteractive(db, args) {
 
   const resolved = Path.resolve(destPath);
   const rl = Readline.createInterface({ input: process.stdin, output: process.stdout });
-  const unmatched = getUnmatchedFiles(db);
+  const unmatched = getUnmatchedFiles(db, resolved);
 
   if (unmatched.length === 0) {
     console.log('No unmatched files to process.');
@@ -135,16 +143,42 @@ async function commandInteractive(db, args) {
           }
 
           try {
-            const finalPath = copyFileToDestination(file.sourcePath, resolved, dest, chosenFilename);
+            const moveFile = db.isMoveOnSync(file.sourcePath);
+            const result = copyFileToDestination(file.sourcePath, resolved, dest, chosenFilename, { moveFile });
             db.markSynced(
               file.hash,
-              finalPath,
+              result.path,
               file.sourcePath,
               chosenFilename,
               file.allSourcePaths,
               file.allFilenames
             );
-            console.log(`Copied to: ${finalPath}`);
+
+            if (result.moved && !result.skipped)
+              db.removeFile(file.sourcePath);
+
+            if (result.skipped)
+              console.log(`Skipped (already exists): ${result.path}`);
+            else if (result.moved)
+              console.log(`Moved to: ${result.path}`);
+            else
+              console.log(`Copied to: ${result.path}`);
+
+            // Set target_sync_location on this file and propagate to siblings
+            const sourceDir = Path.dirname(file.sourcePath);
+            db.setTargetSyncLocation(file.sourcePath, dest);
+
+            // Propagate to siblings with NULL target_sync_location
+            const siblings = db.getFilesInDirectory(sourceDir);
+            const toUpdate = siblings.filter((s) =>
+              s.path !== file.sourcePath &&
+              s.target_sync_location == null
+            );
+            if (toUpdate.length > 0) {
+              db.setTargetSyncLocationBatch(toUpdate.map((s) => s.path), dest);
+              console.log(`  Also assigned "${dest}" to ${toUpdate.length} sibling files`);
+            }
+
             i++;
           } catch (err) {
             printError(`Error: ${err.message}`);
