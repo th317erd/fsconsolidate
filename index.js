@@ -42,6 +42,7 @@ const commandInspect = require('./commands/inspect');
 const commandRemove = require('./commands/remove');
 const commandMigrate = require('./commands/migrate');
 const commandAnalyze = require('./commands/analyze');
+const commandGarbage = require('./commands/garbage');
 
 // Global state
 let globalDb = null;
@@ -88,11 +89,63 @@ function setupShutdownHandler() {
 // CLI
 // ============================================================================
 
+// ============================================================================
+// Command Help Definitions (imported from command modules)
+// ============================================================================
+
+const COMMAND_HELP = {
+  'scan':        commandScan.HELP,
+  'status':      commandStatus.HELP,
+  'sync':        commandSync.HELP,
+  'large-files': commandLargeFiles.HELP,
+  'interactive': commandInteractive.HELP,
+  'config':      commandConfig.HELP,
+  'duplicates':  commandDuplicates.HELP,
+  'inspect':     commandInspect.HELP,
+  'analyze':     commandAnalyze.HELP,
+  'remove':      commandRemove.HELP,
+  'migrate':     commandMigrate.HELP,
+  'garbage':     commandGarbage.HELP,
+  'help': {
+    summary: 'Show help for a command',
+    description: `
+Displays detailed help and examples for a specific command.`,
+    options: null,
+    examples: `
+  # Show general help
+  node index.js help --db ~/mydb.db
+
+  # Show help for a specific command
+  node index.js help scan --db ~/mydb.db
+  node index.js help sync --db ~/mydb.db
+  node index.js help config --db ~/mydb.db`,
+  },
+};
+
+function printCommandHelp(commandName) {
+  const help = COMMAND_HELP[commandName];
+
+  if (!help) {
+    console.log(`Unknown command: ${commandName}`);
+    console.log(`\nAvailable commands: ${Object.keys(COMMAND_HELP).join(', ')}`);
+    process.exit(1);
+  }
+
+  console.log(`
+${commandName} - ${help.summary}
+${help.description}
+${help.options ? `\nOptions:${help.options}` : ''}
+Examples:
+${help.examples}
+`);
+}
+
 function printUsage() {
   console.log(`
 file-helper - Scan, deduplicate, and consolidate files from multiple locations
 
 Usage: node index.js <command> --db <database-file> [options]
+       node index.js help <command> --db <database-file>
 
 Commands:
   scan          Scan root paths and build/update the hash database
@@ -105,82 +158,29 @@ Commands:
   inspect       Browse database (files, roots, duplicates, synced, hash, search)
   analyze       Analyze files (guess-targets: infer sync locations from hashes)
   remove        Remove files from database matching a pattern
+  garbage       Find/delete files in database that match ignore patterns
   migrate       Migrate from old JSON database to SQLite
+  help          Show help for a specific command
 
 Required:
   --db <file>   Path to the database file (SQLite, .db extension recommended)
 
-Scan Options:
-  -r, --root <path>      Root path to scan (can specify multiple)
-  --add-root <path>      Add a root path and scan (same as config --add-root + scan)
+Run 'node index.js help <command> --db <file>' for detailed help on a command.
 
-Sync Options:
-  -d, --dest <path>   Destination folder for synced files
-  --dry-run           Show what would be synced without copying
-  --limit N           Only sync up to N files (default: 50)
-  --include-large     Include files over 300MB
+Quick Examples:
 
-Config Options:
-  --add-root <path>           Add a root path to scan
-  --remove-root <path>        Remove a root path
-  --root-option <root> <key> [value]  Set/remove a per-root option
-  --add-rule <pattern> <dest> Add a routing rule
-  --add-ignore <pattern>      Add an ignore pattern
-  --add-include <pattern>     Add include pattern (overrides ignore patterns)
-  --remove-include <pattern>  Remove an include pattern
-  --set-dest <path>           Set default sync destination
-  --reset                     Reset to defaults (keeps file hashes)
+  # Scan directories
+  node index.js scan --db ~/mydb.db -r ~/GoogleDrive -r ~/Backups
 
-Root Options:
-  move_on_sync    Move files instead of copy during sync
-                  (instant rename on same device, copy+delete across devices)
-                  Enable:  --root-option <root> move_on_sync
-                  Disable: --root-option <root> move_on_sync false
-
-Inspect Subcommands:
-  inspect files              List all files in database
-  inspect roots              Show files grouped by root
-  inspect duplicates         Show duplicates with cross-root analysis
-  inspect synced             Show synced files and their original names
-  inspect hash <prefix>      Find files by hash prefix
-  inspect search <pattern>   Search files by name pattern
-
-Inspect Options:
-  --limit N              Limit number of results (default: 50)
-  --filter-root <path>   Filter to specific root
-  --ext <extension>      Filter by extension (e.g., .jpg)
-
-Migration:
-  migrate <json-file>    Import data from old JSON database format
-
-Examples:
-
-  # SCAN - Create database and scan one or more roots
-  node index.js scan --db ~/mydb.db -r ~/GoogleDrive
-  node index.js scan --db ~/mydb.db -r ~/Drive1 -r ~/Drive2 -r ~/Drive3
-  node index.js scan --db ~/mydb.db --add-root /mnt/newbackup
-
-  # STATUS - View database summary and sync progress
+  # Check status
   node index.js status --db ~/mydb.db
 
-  # CONFIG - Modify settings (view config by running with no options)
-  node index.js config --db ~/mydb.db
-  node index.js config --db ~/mydb.db --add-root /mnt/backup2
-  node index.js config --db ~/mydb.db --set-dest /mnt/consolidated
-  node index.js config --db ~/mydb.db --add-rule "*.psd" "Photoshop"
+  # Sync files (dry run first)
+  node index.js sync --db ~/mydb.db --dry-run
+  node index.js sync --db ~/mydb.db
 
-  # SYNC - Copy unique files to destination
-  node index.js sync --db ~/mydb.db --dest /mnt/consolidated --dry-run
-  node index.js sync --db ~/mydb.db --dest /mnt/consolidated
-  node index.js sync --db ~/mydb.db --include-large
-
-  # MIGRATE - Import from old JSON format
-  node index.js migrate ~/old-database.json --db ~/new-database.db
-
-  # INSPECT - Browse and search the database
-  node index.js inspect files --db ~/mydb.db --limit 100
-  node index.js inspect duplicates --db ~/mydb.db
-  node index.js inspect search "vacation" --db ~/mydb.db
+  # Get help on a command
+  node index.js help sync --db ~/mydb.db
 `);
 }
 
@@ -212,7 +212,10 @@ function parseArgs(argv) {
     hashQuery:      null,
     searchPattern:  null,
     removePattern:  null,
+    filterType:     null,
     jsonPath:       null,
+    helpCommand:    null,
+    garbageSubcommand: null,
   };
 
   const positional = [];
@@ -249,6 +252,8 @@ function parseArgs(argv) {
         args.removeRoot = argv[++i];
         break;
       case '--root-option':
+        if (i + 2 >= argv.length)
+          throw new Error('--root-option requires at least 2 arguments: <root> <key> [value]');
         args.rootOptionRoot = argv[++i];
         args.rootOptionKey = argv[++i];
         // Value is optional - omitting it implies 'true'
@@ -284,18 +289,18 @@ function parseArgs(argv) {
       case '--extension':
         args.filterExt = argv[++i];
         break;
+      case '--type':
+        args.filterType = argv[++i];
+        break;
       case '--help':
       case '-h':
-        printUsage();
-        process.exit(0);
+        args._help = true;
+        break;
       default:
         if (!arg.startsWith('-'))
           positional.push(arg);
-        else {
-          printUsage();
-          printError(`Error: Unknown option '${arg}'`);
-          process.exit(1);
-        }
+        else
+          throw new Error(`Unknown option '${arg}'`);
     }
     i++;
   }
@@ -316,6 +321,10 @@ function parseArgs(argv) {
       args.removePattern = positional.slice(1).join(' ');
     } else if (args.command === 'migrate' && positional.length > 1) {
       args.jsonPath = positional[1];
+    } else if (args.command === 'help' && positional.length > 1) {
+      args.helpCommand = positional[1];
+    } else if (args.command === 'garbage' && positional.length > 1) {
+      args.garbageSubcommand = positional[1];
     } else {
       args.roots.push(...positional.slice(1));
     }
@@ -328,15 +337,37 @@ function parseArgs(argv) {
 // Main
 // ============================================================================
 
-(async function main() {
+if (require.main === module) (async function main() {
   setupShutdownHandler();
 
-  const args = parseArgs(process.argv);
+  let args;
+  try {
+    args = parseArgs(process.argv);
+  } catch (err) {
+    printUsage();
+    printError(`Error: ${err.message}`);
+    process.exit(1);
+  }
+
+  if (args._help) {
+    printUsage();
+    process.exit(0);
+  }
 
   if (!args.command) {
     printUsage();
     printError('Error: No command specified');
     process.exit(1);
+  }
+
+  // Handle help command before requiring database
+  if (args.command === 'help') {
+    if (args.helpCommand) {
+      printCommandHelp(args.helpCommand);
+    } else {
+      printUsage();
+    }
+    process.exit(0);
   }
 
   if (!args.dbPath) {
@@ -392,6 +423,9 @@ function parseArgs(argv) {
       case 'migrate':
         await commandMigrate(globalDb, args);
         break;
+      case 'garbage':
+        await commandGarbage(globalDb, args);
+        break;
       default:
         printUsage();
         printError(`Error: Unknown command '${args.command}'`);
@@ -401,3 +435,5 @@ function parseArgs(argv) {
     globalDb.close();
   }
 })();
+
+module.exports = { parseArgs };

@@ -4,7 +4,7 @@
   "description": "Scan, deduplicate, and consolidate files from multiple backup locations",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test spec/*-spec.js spec/**/*-spec.js"
   },
   "keywords": [],
   "author": "",
@@ -12,5 +12,17 @@
   "type": "commonjs",
   "dependencies": {
     "better-sqlite3": "^11.7.0"
-  }
+  },
+  "directories": {
+    "lib": "lib"
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/th317erd/fsconsolidate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/th317erd/fsconsolidate/issues"
+  },
+  "homepage": "https://github.com/th317erd/fsconsolidate#readme"
 }
