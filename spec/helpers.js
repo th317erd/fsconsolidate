@@ -114,6 +114,33 @@ function sha1(content) {
   return Crypto.createHash('sha1').update(content).digest('hex');
 }
 
+/**
+ * Capture console.log/error/warn output during an async function call.
+ * Returns { lines, errors, warnings, result }.
+ */
+async function captureOutput(fn) {
+  const originalLog  = console.log;
+  const originalErr  = console.error;
+  const originalWarn = console.warn;
+
+  const lines    = [];
+  const errors   = [];
+  const warnings = [];
+
+  console.log   = (...args) => lines.push(args.join(' '));
+  console.error = (...args) => errors.push(args.join(' '));
+  console.warn  = (...args) => warnings.push(args.join(' '));
+
+  try {
+    const result = await fn();
+    return { lines, errors, warnings, result };
+  } finally {
+    console.log   = originalLog;
+    console.error = originalErr;
+    console.warn  = originalWarn;
+  }
+}
+
 module.exports = {
   SPEC_TMP_ROOT,
   createTempDir,
@@ -123,4 +150,5 @@ module.exports = {
   createFile,
   createStructure,
   sha1,
+  captureOutput,
 };
